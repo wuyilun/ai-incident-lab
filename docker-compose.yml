@@ -1,0 +1,50 @@
+services:
+  control:
+    build:
+      context: .
+      dockerfile: infra/Dockerfile.control
+    ports:
+      - "127.0.0.1:8000:8000"
+    environment:
+      LAB_DB: /data/lab.sqlite
+      AGENT_URL: http://agent:8001
+      TICK_SECONDS: ${TICK_SECONDS:-1}
+      REQUIRE_ACTION_APPROVAL: ${REQUIRE_ACTION_APPROVAL:-false}
+    volumes:
+      - lab-data:/data
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/health')"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+  agent:
+    build:
+      context: .
+      dockerfile: infra/Dockerfile.agent
+    environment:
+      MCP_URL: http://control:8000/mcp
+      AGENT_POLL_SECONDS: ${TICK_SECONDS:-1}
+      LLM_API_KEY: ${LLM_API_KEY:-}
+      LLM_BASE_URL: ${LLM_BASE_URL:-https://api.openai.com/v1}
+      LLM_MODEL: ${LLM_MODEL:-gpt-4.1-mini}
+    depends_on:
+      control:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8001/health')"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+  frontend:
+    build:
+      context: .
+      dockerfile: infra/Dockerfile.frontend
+    ports:
+      - "127.0.0.1:5173:80"
+    depends_on:
+      control:
+        condition: service_healthy
+      agent:
+        condition: service_healthy
+volumes:
+  lab-data:

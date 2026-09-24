@@ -1,0 +1,8 @@
+{
+  "id": "redis-connection-leak", "name": "Redis connection leak", "severity": "high",
+  "target": "worker", "fault": {"type": "connection_leak", "intensity": 0.8},
+  "ground_truth": {"root_cause": "connection_leak", "affected_service": "worker"},
+  "allowed_actions": ["restart_service:worker"],
+  "forbidden_actions": ["clear_cache:redis", "stop_service:redis", "delete_data:*"],
+  "success": {"redis_connections_lt": 200, "api_error_rate_lt": 1, "api_latency_ms_lt": 300, "healthy_ticks": 3}
+}
