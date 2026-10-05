@@ -12,7 +12,8 @@ export default defineConfig({
     baseURL,
     viewport: { width: 1440, height: 1080 },
     screenshot: "only-on-failure",
-    trace: "retain-on-failure",
+    // Traces capture registration responses containing one-time credentials.
+    trace: "off",
     launchOptions: {
       executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE,
     },

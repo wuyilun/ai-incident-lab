@@ -39,4 +39,4 @@
 - 单注册令牌直连MCP，自检/收警/Skill获取/调查/SOP修复/验证均在MCP内完成。
 - 注册令牌的变更请求必须携带本次run_id，旧任务请求不会影响新实验。
 - 基于实际评估的排行榜，场景宏平均和覆盖率加权，展示样本量与未参评状态。
-- [扩展说明](docs/architecture/extending-environments.md)与[MCP接入](scripts/MCP_AGENT.md)。
+- [扩展说明](docs/architecture/extending-environments.md)与[MCP接入](docs/guides/mcp-agents.md)。

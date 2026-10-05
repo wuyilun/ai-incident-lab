@@ -8,7 +8,7 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, ConfigDict, Field
 
 from apps.agent.client import connect
-from apps.agent.llm import run_llm
+from apps.agent.llm import MissingLLMCredentials, run_llm
 from apps.agent.reference import run_reference
 
 logger = logging.getLogger(__name__)
@@ -45,8 +45,12 @@ async def execute(body: RunRequest):
                 return {"status": "resolved" if client.resolved else "failed"}
             except Exception as exc:
                 logger.warning("agent_run_failed: %s", type(exc).__name__)
-                # Error text is an observable diagnostic, never include credentials or request headers.
-                reason = str(exc)[:500] if isinstance(exc, RuntimeError) else type(exc).__name__
+                # Provider errors may contain credentials or request headers.
+                reason = (
+                    "LLM_API_KEY is required for LLM mode"
+                    if isinstance(exc, MissingLLMCredentials)
+                    else type(exc).__name__
+                )
                 with contextlib.suppress(Exception):
                     await client.call("fail_incident", reason=reason)
                 return {"status": "failed", "error": reason}

@@ -93,3 +93,13 @@ The deployment is left running at http://localhost:5173, with the last benchmark
 ## Honest limits
 
 No real provider credentials were supplied. LLM adapter behavior was verified with an offline HTTP provider fixture; actual model diagnostic accuracy, token usage and cost were not evaluated. Reference results do not imply LLM benchmark performance. GitHub Actions configuration was created but has not run on a remote GitHub runner in this session.
+
+## Repository hygiene verification — 2026-10-05
+
+- Python: 78 tests passed, including regression coverage that provider exception text is not published.
+- Browser: 7 end-to-end tests passed against isolated local services, including external MCP registration and recovery.
+- Ruff lint/format, mypy, frontend ESLint, TypeScript, and production build passed.
+- Gitleaks 8.30.1: existing full Git history and a clean export of publishable files had no detected secrets. Manual review also checked commit metadata and unreachable blobs; historical personal author metadata was identified for replacement with a GitHub noreply identity.
+- Environment variants, private keys, and local databases are ignored. Browser traces and CI raw artifact uploads are disabled because registration responses contain tokens.
+
+These checks do not guarantee that arbitrary future agent output is free of sensitive data. Runtime records remain local and must be reviewed before sharing.

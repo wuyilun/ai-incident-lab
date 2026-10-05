@@ -13,3 +13,23 @@ test-results/
 artifacts/
 *.log
 .DS_Store
+
+# Local credentials and runtime state
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+id_rsa
+id_ed25519
+.secrets/
+.mcp.json
+*.sqlite
+*.sqlite-*
+*.db
+*.db-*
+.coverage
+htmlcov/
+*.log
+.DS_Store

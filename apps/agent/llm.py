@@ -10,10 +10,14 @@ from apps.agent.client import ToolClient
 from apps.agent.reference import load_skill
 
 
+class MissingLLMCredentials(RuntimeError):
+    """Missing local configuration, without provider response details."""
+
+
 async def run_llm(client: ToolClient) -> None:
     key = os.getenv("LLM_API_KEY")
     if not key:
-        raise RuntimeError("LLM_API_KEY is required for LLM mode")
+        raise MissingLLMCredentials("LLM_API_KEY is required for LLM mode")
     discovered = await client.session.list_tools()
     tools = [
         {
