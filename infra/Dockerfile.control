@@ -10,6 +10,7 @@ COPY simulator simulator
 COPY evaluator evaluator
 COPY lab_mcp lab_mcp
 COPY knowledge/sop knowledge/sop
+COPY knowledge/skills knowledge/skills
 ENV PATH="/app/.venv/bin:$PATH" LAB_DB=/data/lab.sqlite PYTHONUNBUFFERED=1
 RUN useradd --uid 10001 --create-home lab && mkdir /data && chown lab:lab /data
 USER lab

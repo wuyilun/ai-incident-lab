@@ -1,0 +1,211 @@
+{
+  "id": "commerce",
+  "name": "订单与异步任务环境",
+  "services": [
+    {
+      "name": "gateway",
+      "label": "流量网关",
+      "kind": "gateway",
+      "config": {
+        "upstream": "api"
+      },
+      "metric_keys": [
+        "api_latency_ms",
+        "api_error_rate"
+      ],
+      "tier": 0
+    },
+    {
+      "name": "api",
+      "label": "订单 API",
+      "kind": "application",
+      "config": {
+        "timeout_ms": 3000,
+        "cpu_limit_percent": 80
+      },
+      "metric_keys": [
+        "api_cpu_percent",
+        "api_latency_ms",
+        "api_error_rate"
+      ],
+      "tier": 1
+    },
+    {
+      "name": "worker",
+      "label": "异步 Worker",
+      "kind": "worker",
+      "config": {
+        "pool_limit": 100,
+        "concurrency": 8
+      },
+      "metric_keys": [
+        "worker_open_clients",
+        "queue_depth"
+      ],
+      "tier": 2
+    },
+    {
+      "name": "redis",
+      "label": "Redis 缓存",
+      "kind": "cache",
+      "config": {
+        "max_clients": 1000
+      },
+      "metric_keys": [
+        "redis_connections",
+        "redis_latency_ms"
+      ],
+      "tier": 3
+    },
+    {
+      "name": "database",
+      "label": "订单数据库",
+      "kind": "database",
+      "config": {
+        "slow_query_ms": 200,
+        "max_connections": 100
+      },
+      "metric_keys": [
+        "database_latency_ms"
+      ],
+      "tier": 4
+    },
+    {
+      "name": "queue",
+      "label": "消息队列",
+      "kind": "queue",
+      "config": {
+        "consumer": "worker",
+        "max_depth": 500
+      },
+      "metric_keys": [
+        "queue_depth"
+      ],
+      "tier": 3
+    },
+    {
+      "name": "payment",
+      "label": "支付服务",
+      "kind": "application",
+      "tier": 2,
+      "config": {
+        "timeout_ms": 2000
+      },
+      "metric_keys": [
+        "payment_latency_ms"
+      ]
+    },
+    {
+      "name": "inventory",
+      "label": "库存服务",
+      "kind": "application",
+      "tier": 2,
+      "config": {
+        "timeout_ms": 1500
+      },
+      "metric_keys": [
+        "inventory_latency_ms"
+      ]
+    },
+    {
+      "name": "notification",
+      "label": "通知消费者",
+      "kind": "worker",
+      "tier": 2,
+      "config": {
+        "concurrency": 4
+      },
+      "metric_keys": [
+        "notification_lag"
+      ]
+    },
+    {
+      "name": "db_proxy",
+      "label": "数据库连接池",
+      "kind": "pool",
+      "tier": 3,
+      "config": {
+        "pool_limit": 100,
+        "acquire_timeout_ms": 1000
+      },
+      "metric_keys": [
+        "db_pool_active",
+        "db_pool_wait_ms"
+      ]
+    }
+  ],
+  "dependencies": [
+    {
+      "from": "gateway",
+      "to": "api",
+      "kind": "http",
+      "label": "HTTP 请求"
+    },
+    {
+      "from": "api",
+      "to": "payment",
+      "kind": "http",
+      "label": "支付调用"
+    },
+    {
+      "from": "api",
+      "to": "inventory",
+      "kind": "http",
+      "label": "库存调用"
+    },
+    {
+      "from": "api",
+      "to": "redis",
+      "kind": "cache",
+      "label": "缓存读取"
+    },
+    {
+      "from": "api",
+      "to": "queue",
+      "kind": "publish",
+      "label": "发布任务"
+    },
+    {
+      "from": "payment",
+      "to": "db_proxy",
+      "kind": "sql",
+      "label": "获取连接"
+    },
+    {
+      "from": "inventory",
+      "to": "db_proxy",
+      "kind": "sql",
+      "label": "获取连接"
+    },
+    {
+      "from": "worker",
+      "to": "db_proxy",
+      "kind": "sql",
+      "label": "获取连接"
+    },
+    {
+      "from": "db_proxy",
+      "to": "database",
+      "kind": "sql",
+      "label": "执行查询"
+    },
+    {
+      "from": "worker",
+      "to": "redis",
+      "kind": "cache",
+      "label": "任务缓存"
+    },
+    {
+      "from": "worker",
+      "to": "queue",
+      "kind": "consume",
+      "label": "消费任务"
+    },
+    {
+      "from": "notification",
+      "to": "queue",
+      "kind": "consume",
+      "label": "消费通知"
+    }
+  ]
+}

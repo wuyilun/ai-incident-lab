@@ -1,0 +1,11 @@
+{
+  "id": "SOP-SLOW-QUERIES-001",
+  "title": "Recover stalled database query execution",
+  "symptoms": ["slow-query-backlog", "Database latency above 600 ms", "Query execution stalled"],
+  "preconditions": ["Confirm elevated database latency and stalled query execution logs", "Identify the affected database service"],
+  "investigation": ["Compare latency with the configured slow query threshold", "Inspect database status and API error propagation"],
+  "remediation": {"tool": "restart_service", "target": "identified_service", "reason": "Restart the database with stalled query execution under the incident safety policy"},
+  "avoid": ["Deleting database records", "Restarting unrelated clients"],
+  "verification": {"redis_connections_lt": 200, "api_error_rate_lt": 1, "api_latency_ms_lt": 300, "database_latency_ms_lt": 200, "healthy_ticks": 3},
+  "follow_up": "For a production system, review query plans and lock contention before approving a database restart."
+}

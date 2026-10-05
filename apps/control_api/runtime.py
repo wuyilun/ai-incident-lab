@@ -12,6 +12,7 @@ from uuid import uuid4
 
 import httpx
 
+from apps.control_api.registry import Registry
 from apps.control_api.store import Store
 from evaluator.grader import grade
 from lab_mcp.safety import assess
@@ -39,6 +40,9 @@ class Runtime:
         self.action_count = 0
         self.tool_count = 0
         self.started_at = 0.0
+        self.dispatched_at = 0.0
+        self.received = False
+        self.registry = Registry(store, self.agent_busy, agent_url)
         for incident in store.list("incident"):
             if incident["status"] not in TERMINAL:
                 incident.update(
@@ -47,7 +51,11 @@ class Runtime:
                 store.emit(
                     "incident.failed",
                     "control",
-                    {"status": "failed", "reason": incident["error"]},
+                    {
+                        "status": "failed",
+                        "reason": incident["error"],
+                        "tick": incident.get("latest", incident["before"])["tick"],
+                    },
                     incident["id"],
                     incident["run_id"],
                 )
@@ -72,7 +80,11 @@ class Runtime:
                 store.put("evaluation", incident["id"], result)
                 store.put("incident", incident["id"], incident)
                 store.emit(
-                    "evaluator.result", "evaluator", result, incident["id"], incident["run_id"]
+                    "evaluator.result",
+                    "evaluator",
+                    {**result, "tick": incident.get("latest", incident["before"])["tick"]},
+                    incident["id"],
+                    incident["run_id"],
                 )
         for benchmark in store.list("benchmark"):
             if benchmark["status"] == "running":
@@ -83,10 +95,23 @@ class Runtime:
         return self.store.emit(
             event_type,
             source,
-            payload,
+            {**payload, "tick": self.world.tick},
             self.incident["id"] if self.incident else None,
             self.incident["run_id"] if self.incident else None,
         )
+
+    def agent_busy(self, agent_id: str) -> bool:
+        return bool(
+            self.incident
+            and self.incident["status"] not in TERMINAL
+            and self.incident.get("agent_id") == agent_id
+        )
+
+    def select_agent(self, agent_id: str) -> dict:
+        item = self.registry.get(agent_id)
+        if not item["enabled"]:
+            raise ValueError("Selected Agent is disabled")
+        return item
 
     def save(self) -> None:
         if self.incident:
@@ -101,10 +126,13 @@ class Runtime:
             raise ValueError("Previous agent is still finishing")
         if request.scenario_id not in self.scenarios:
             raise ValueError("Unknown scenario")
+        agent = self.select_agent(request.agent_id or f"builtin-{request.agent_mode}")
         self.world = World(request.seed)
         self.world.inject(self.scenarios[request.scenario_id])
         self.token = None
         self.action_count = self.tool_count = 0
+        self.started_at = self.dispatched_at = 0.0
+        self.received = False
         self.incident = {
             "id": str(uuid4()),
             "run_id": str(uuid4()),
@@ -112,14 +140,22 @@ class Runtime:
             "seed": request.seed,
             "status": "degrading",
             "auto_agent": request.auto_agent,
-            "agent_mode": request.agent_mode,
+            "agent_mode": agent["kind"],
+            "agent_id": agent["id"],
+            "agent_name": agent["name"],
             "alert": None,
             "before": self.world.observation(),
             "evaluation": None,
         }
         self.save()
         self.emit(
-            "fault.injected", "scenario", {"scenario_id": request.scenario_id, "seed": request.seed}
+            "fault.injected",
+            "scenario",
+            {
+                "scenario_id": request.scenario_id,
+                "seed": request.seed,
+                "target": self.scenarios[request.scenario_id].target,
+            },
         )
         self.emit("environment.metric", "simulator", self.world.observation())
         return self.incident
@@ -130,7 +166,11 @@ class Runtime:
             return
         self.emit("environment.metric", "simulator", snapshot)
         self.incident["latest"] = snapshot
-        if self.token and asyncio.get_running_loop().time() - self.started_at > 120:
+        now = asyncio.get_running_loop().time()
+        if self.token and not self.received and now - self.dispatched_at > 30:
+            self.finish("failed", "Agent did not acknowledge alert within 30 seconds")
+            return
+        if self.token and self.received and now - self.started_at > 120:
             self.finish("failed", "Run timeout exceeded")
             return
         if self.incident["status"] == "degrading" and snapshot["metrics"]["api_error_rate"] >= 3:
@@ -146,7 +186,9 @@ class Runtime:
             self.emit("alert.generated", "alerting", alert)
             self.emit("incident.created", "alerting", {"status": "detected", "alert": alert})
             if self.incident["auto_agent"]:
-                self.start_agent(self.incident["id"], self.incident["agent_mode"])
+                self.start_agent(
+                    self.incident["id"], self.incident["agent_mode"], self.incident["agent_id"]
+                )
         self.save()
 
     async def clock(self) -> None:
@@ -159,29 +201,109 @@ class Runtime:
                 if self.incident and self.incident["status"] not in TERMINAL:
                     self.finish("failed", "Simulation tick failed; inspect control logs")
 
-    def start_agent(self, incident_id: str, mode: str) -> dict:
+    def start_agent(self, incident_id: str, mode: str, agent_id: str | None = None) -> dict:
         if not self.incident or self.incident["id"] != incident_id:
             raise ValueError("Only the current incident can be started")
         if self.incident["status"] != "detected":
             raise ValueError("Agent can start only after a detected alert")
+        legacy_external = mode == "external" and agent_id is None
+        agent = None if legacy_external else self.select_agent(agent_id or f"builtin-{mode}")
+        mode = agent["kind"] if agent else "external"
         self.token = secrets.token_urlsafe(32)
-        self.started_at = asyncio.get_running_loop().time()
-        self.incident.update(status="investigating", agent_mode=mode)
+        self.dispatched_at = asyncio.get_running_loop().time()
+        self.started_at = self.dispatched_at if legacy_external else 0.0
+        self.received = legacy_external
+        self.incident.update(
+            status="investigating" if legacy_external else "dispatching",
+            agent_mode=mode,
+            agent_id=agent["id"] if agent else None,
+            agent_name=agent["name"] if agent else "Manual external Agent",
+        )
         self.save()
         run = {
             "id": self.incident["run_id"],
             "incident_id": incident_id,
             "mode": mode,
-            "status": "running",
+            "agent_id": self.incident["agent_id"],
+            "agent_name": self.incident["agent_name"],
+            "status": "running" if legacy_external else "dispatching",
         }
         self.store.put("run", run["id"], run)
-        self.emit("agent.started", "control", {"mode": mode, "status": "investigating"})
-        if mode == "external":
-            # Only the operator-facing connection response contains this secret.
-            # It is neither persisted nor exposed by observation tools/events.
+        self.emit(
+            "alert.dispatched",
+            "control",
+            {
+                "agent_id": self.incident["agent_id"],
+                "agent_name": self.incident["agent_name"],
+                "mode": mode,
+                "status": self.incident["status"],
+            },
+        )
+        if legacy_external:
+            self.emit("agent.started", "control", {"mode": mode, "status": "investigating"})
             return {**run, "token": self.token, "mcp_path": "/mcp", "timeout_seconds": 120}
-        self.agent_task = asyncio.create_task(self.dispatch(run, self.token))
+        if mode != "external":
+            self.agent_task = asyncio.create_task(self.dispatch(run, self.token))
         return run
+
+    def next_assignment(self, agent_id: str) -> dict:
+        self.registry.touch(agent_id)
+        if not self.agent_busy(agent_id) or not self.token or self.received:
+            return {"assignment": None}
+        assert self.incident
+        if asyncio.get_running_loop().time() - self.dispatched_at > 30:
+            self.finish("failed", "Agent did not acknowledge alert within 30 seconds")
+            return {"assignment": None}
+        return {
+            "assignment": {
+                "incident_id": self.incident["id"],
+                "run_id": self.incident["run_id"],
+                "token": self.token,
+                "mcp_path": "/mcp",
+                "alert": self.incident["alert"],
+                "timeout_seconds": 120,
+            }
+        }
+
+    def acknowledge(self, agent_id: str, run_id: str, via: str = "connector_ack") -> dict:
+        if (
+            not self.agent_busy(agent_id)
+            or not self.incident
+            or self.incident["run_id"] != run_id
+            or not self.token
+        ):
+            raise ValueError("No active assignment for this Agent and run")
+        now = asyncio.get_running_loop().time()
+        if (not self.received and now - self.dispatched_at > 30) or (
+            self.received and now - self.started_at > 120
+        ):
+            self.finish("failed", "Agent assignment expired")
+            raise ValueError("Agent assignment expired")
+        self.registry.touch(agent_id)
+        self.receive_alert(via)
+        return {"accepted": True}
+
+    def receive_alert(self, via: str) -> None:
+        if self.received:
+            return
+        assert self.incident
+        self.received = True
+        self.started_at = asyncio.get_running_loop().time()
+        if self.incident["status"] == "dispatching":
+            self.incident["status"] = "investigating"
+        identity = {
+            "agent_id": self.incident.get("agent_id"),
+            "agent_name": self.incident.get("agent_name"),
+            "mode": self.incident["agent_mode"],
+            "status": self.incident["status"],
+        }
+        self.emit("agent.alert_received", "agent", {**identity, "via": via})
+        self.emit("agent.started", "agent", identity)
+        run = self.store.get("run", self.incident["run_id"])
+        assert run
+        run["status"] = "running"
+        self.store.put("run", run["id"], run)
+        self.save()
 
     async def dispatch(self, run: dict, token: str) -> None:
         try:
@@ -217,8 +339,14 @@ class Runtime:
             or self.incident["status"] in TERMINAL
         ):
             raise ValueError("Inactive or invalid run token")
-        if asyncio.get_running_loop().time() - self.started_at > 120:
+        now = asyncio.get_running_loop().time()
+        if self.received and now - self.started_at > 120:
             raise ValueError("Run timeout exceeded")
+        if not self.received:
+            if now - self.dispatched_at > 30:
+                raise ValueError("Alert acknowledgement timeout exceeded")
+            if self.incident["agent_mode"] == "external":
+                raise ValueError("Acknowledge the assignment before using MCP")
 
     def public_incident(self) -> dict:
         if not self.incident:
@@ -262,7 +390,7 @@ class Runtime:
         if not reason.strip():
             raise ValueError("Action reason is required")
         self.action_count += 1
-        # v0.1 intentionally permits only client restart, all other actions are denied.
+        # Only scoped simulated restarts are implemented; all mutations pass policy.
         if tool != "restart_service":
             raise ValueError("Unsupported allowed action")
         before = self.world.observation()
@@ -315,6 +443,8 @@ class Runtime:
                 "incident_id": self.incident["id"],
                 "status": status,
                 "mode": self.incident["agent_mode"],
+                "agent_id": self.incident.get("agent_id"),
+                "agent_name": self.incident.get("agent_name"),
             },
         )
         self.emit("evaluator.result", "evaluator", result)

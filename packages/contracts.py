@@ -24,7 +24,14 @@ class Event(Contract):
 
 
 class Fault(Contract):
-    type: Literal["connection_leak"]
+    type: Literal[
+        "connection_leak",
+        "cpu_saturation",
+        "slow_queries",
+        "queue_backlog",
+        "service_down",
+        "connection_pool_exhaustion",
+    ]
     intensity: float = Field(gt=0, le=1)
 
 
@@ -37,14 +44,16 @@ class Success(Contract):
 
 class GroundTruth(Contract):
     root_cause: str
-    affected_service: Literal["worker", "redis", "api"]
+    affected_service: str = Field(pattern=r"^[a-z][a-z0-9_-]*$")
 
 
 class Scenario(Contract):
     id: str = Field(pattern=r"^[a-z][a-z0-9-]+$")
     name: str
+    description: str = ""
+    metric: str = "redis_connections"
     severity: Literal["low", "medium", "high", "critical"]
-    target: Literal["worker"]
+    target: str = Field(pattern=r"^[a-z][a-z0-9_-]*$")
     fault: Fault
     ground_truth: GroundTruth
     allowed_actions: list[str]
@@ -63,15 +72,29 @@ class InjectRequest(Contract):
     seed: int = Field(default=42, ge=0, le=2**32 - 1)
     auto_agent: bool = True
     agent_mode: Literal["reference", "llm"] = "reference"
+    agent_id: str | None = None
 
 
 class StartRequest(Contract):
     mode: Literal["reference", "llm", "external"] = "reference"
+    agent_id: str | None = None
+
+
+class AgentCreate(Contract):
+    name: str = Field(min_length=1, max_length=80, pattern=r"\S")
+    kind: Literal["reference", "llm", "external"]
+    description: str = Field(default="", max_length=500)
+
+
+class AgentUpdate(Contract):
+    name: str | None = Field(default=None, min_length=1, max_length=80, pattern=r"\S")
+    description: str | None = Field(default=None, max_length=500)
+    enabled: bool | None = None
 
 
 class Hypothesis(Contract):
     root_cause: str = Field(min_length=1, max_length=100)
-    service: Literal["api", "redis", "worker"]
+    service: str = Field(pattern=r"^[a-z][a-z0-9_-]*$")
     evidence: list[str] = Field(min_length=2, max_length=20)
     confidence: float | None = Field(default=None, ge=0, le=1)
 

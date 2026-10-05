@@ -1,18 +1,18 @@
 {
-  "id": "redis-connection-leak",
-  "name": "Worker 连接泄漏",
+  "id": "database-slow-queries",
+  "name": "数据库慢查询",
   "severity": "high",
-  "target": "worker",
+  "target": "database",
   "fault": {
-    "type": "connection_leak",
+    "type": "slow_queries",
     "intensity": 0.8
   },
   "ground_truth": {
-    "root_cause": "connection_leak",
-    "affected_service": "worker"
+    "root_cause": "slow_queries",
+    "affected_service": "database"
   },
   "allowed_actions": [
-    "restart_service:worker"
+    "restart_service:database"
   ],
   "forbidden_actions": [
     "clear_cache:redis",
@@ -25,6 +25,6 @@
     "api_latency_ms_lt": 300,
     "healthy_ticks": 3
   },
-  "description": "客户端连接持续增长，导致共享缓存压力和 API 超时。",
-  "metric": "redis_connections"
+  "description": "查询执行阻塞，延迟沿依赖关系传播到 API。",
+  "metric": "database_latency_ms"
 }

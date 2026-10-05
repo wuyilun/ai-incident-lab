@@ -1,0 +1,11 @@
+{
+  "id": "SOP-SERVICE-AVAILABILITY-001",
+  "title": "Recover an unexpectedly exited service",
+  "symptoms": ["exited-process", "Service stopped", "Service process exited unexpectedly"],
+  "preconditions": ["Confirm the service is stopped", "Correlate an unexpected process-exit record with that service"],
+  "investigation": ["Inspect service status and recent logs", "Trace affected clients through the dependency graph"],
+  "remediation": {"tool": "restart_service", "target": "identified_service", "reason": "Restart the unexpectedly exited service to restore its dependencies' availability"},
+  "avoid": ["Restarting unrelated services", "Deleting persistent data"],
+  "verification": {"redis_connections_lt": 200, "api_error_rate_lt": 1, "api_latency_ms_lt": 300, "healthy_ticks": 3},
+  "follow_up": "Inspect the exit cause and resource limits to prevent repeated process failures."
+}

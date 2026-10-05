@@ -19,6 +19,15 @@ def stop_on_signal(signum, frame):
 def main():
     signal.signal(signal.SIGTERM, stop_on_signal)
     load_dotenv(ROOT / ".env")
+    control_port = os.getenv("LAB_CONTROL_PORT", "8000")
+    agent_port = os.getenv("LAB_AGENT_PORT", "8001")
+    frontend_port = os.getenv("LAB_FRONTEND_PORT", "5173")
+    child_env = dict(
+        os.environ,
+        AGENT_URL=f"http://127.0.0.1:{agent_port}",
+        MCP_URL=f"http://127.0.0.1:{control_port}/mcp",
+        LAB_CONTROL_URL=f"http://127.0.0.1:{control_port}",
+    )
     commands = [
         (
             [
@@ -29,7 +38,7 @@ def main():
                 "--host",
                 "127.0.0.1",
                 "--port",
-                "8000",
+                control_port,
             ],
             ROOT,
         ),
@@ -42,16 +51,30 @@ def main():
                 "--host",
                 "127.0.0.1",
                 "--port",
-                "8001",
+                agent_port,
             ],
             ROOT,
         ),
-        (["npm", "run", "dev", "--", "--host", "127.0.0.1"], ROOT / "apps/frontend"),
+        (
+            [
+                "npm",
+                "run",
+                "dev",
+                "--",
+                "--host",
+                "127.0.0.1",
+                "--port",
+                frontend_port,
+                "--strictPort",
+            ],
+            ROOT / "apps/frontend",
+        ),
     ]
     children = [
-        subprocess.Popen(command, cwd=cwd, start_new_session=True) for command, cwd in commands
+        subprocess.Popen(command, cwd=cwd, env=child_env, start_new_session=True)
+        for command, cwd in commands
     ]
-    print("Incident Lab → http://localhost:5173", flush=True)
+    print(f"Incident Lab → http://localhost:{frontend_port}", flush=True)
     try:
         while all(p.poll() is None for p in children):
             time.sleep(0.5)

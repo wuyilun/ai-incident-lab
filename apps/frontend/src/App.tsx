@@ -1,46 +1,37 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   Activity,
-  ArrowRight,
+  Bot,
   ChevronRight,
-  FlaskConical,
-  Layers3,
-  Play,
-  RotateCcw,
+  History,
+  BarChart3,
+  Radio,
   ShieldCheck,
-  Terminal,
   Workflow,
   Zap,
 } from "lucide-react";
+import AgentRegistry from "./AgentRegistry";
+import Leaderboard from "./Leaderboard";
 import IncidentWorkspace from "./IncidentWorkspace";
 import Environment from "./Environment";
 import MetricsTimeline from "./MetricsTimeline";
-import { fmt } from "./format";
-import { api, terminal } from "./types";
-import type { Benchmark, Incident, LabEvent, World } from "./types";
-
-function Metric({
-  label,
-  value,
-  detail,
-  accent = false,
-}: {
-  label: string;
-  value: string;
-  detail: string;
-  accent?: boolean;
-}) {
-  return (
-    <div className={`stat ${accent ? "accent" : ""}`}>
-      <span>{label}</span>
-      <strong>{value}</strong>
-      <small>{detail}</small>
-    </div>
-  );
-}
+import { agentStatus, api, observations, terminal } from "./types";
+import type {
+  Agent,
+  Benchmark,
+  FaultMarker,
+  Incident,
+  LabEvent,
+  Scenario,
+  World,
+} from "./types";
 
 export default function App() {
   const [incidents, setIncidents] = useState<Incident[]>([]);
+  const [agents, setAgents] = useState<Agent[]>([]);
+  const [scenarios, setScenarios] = useState<Scenario[]>([]);
+  const [scenarioId, setScenarioId] = useState("redis-connection-leak");
+  const [previewScenario, setPreviewScenario] = useState(false);
   const [environment, setEnvironment] = useState<World | null>(null);
   const [benchmarks, setBenchmarks] = useState<Benchmark[]>([]);
   const [selected, setSelected] = useState("");
@@ -48,39 +39,36 @@ export default function App() {
   const [connected, setConnected] = useState(false);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
-  const [mode, setMode] = useState("reference");
-  const [auto, setAuto] = useState(true);
+  const [agentId, setAgentId] = useState("builtin-reference");
   const [seed, setSeed] = useState(42);
   const [replay, setReplay] = useState(false);
   const [cursor, setCursor] = useState(0);
   const [playing, setPlaying] = useState(false);
-  const [section, setSection] = useState("overview");
+  const [section, setSection] = useState<
+    "workbench" | "agents" | "leaderboard"
+  >("workbench");
 
   const refresh = useCallback(async () => {
-    const [items, world, trials] = await Promise.all([
+    const [items, world, trials, registered, catalog] = await Promise.all([
       api<Incident[]>("/incidents"),
       api<World>("/environment"),
       api<Benchmark[]>("/benchmarks"),
+      api<Agent[]>("/agents"),
+      api<Scenario[]>("/scenarios"),
     ]);
     setIncidents(items);
     setEnvironment(world);
     setBenchmarks(trials);
+    setAgents(registered);
+    setScenarios(catalog);
     setSelected((current) => current || items[0]?.id || "");
   }, []);
   useEffect(() => {
-    let alive = true;
-    const load = () =>
-      refresh().catch((e) => {
-        if (alive) setError(String(e));
-      });
-    void load();
-    const timer = setInterval(() => void load(), 2000);
-    return () => {
-      alive = false;
-      clearInterval(timer);
-    };
+    const load = () => void refresh().catch((e) => setError(String(e)));
+    load();
+    const timer = setInterval(load, 2000);
+    return () => clearInterval(timer);
   }, [refresh]);
-
   useEffect(() => {
     setEvents([]);
     setReplay(false);
@@ -98,7 +86,7 @@ export default function App() {
       setEvents((current) =>
         current.some((e) => e.sequence === event.sequence)
           ? current
-          : [...current, event],
+          : [...current, event].sort((a, b) => a.sequence - b.sequence),
       );
       if (
         event.event_type.startsWith("incident.") ||
@@ -117,12 +105,11 @@ export default function App() {
       setConnected(false);
     };
   }, [selected, refresh]);
-
   useEffect(() => {
     if (!playing) return;
     const timer = setInterval(
       () => setCursor((current) => Math.min(current + 1, events.length - 1)),
-      150,
+      170,
     );
     return () => clearInterval(timer);
   }, [playing, events.length]);
@@ -131,40 +118,50 @@ export default function App() {
   }, [cursor, events.length, playing]);
 
   const incident = incidents.find((i) => i.id === selected);
-  const latest = incidents[0];
-  const active = latest && !terminal(latest.status);
+  const active = incidents.some((i) => !terminal(i.status));
+  const scenario = scenarios.find((item) => item.id === scenarioId);
+  const incidentScenario = scenarios.find(
+    (item) => item.id === incident?.scenario_id,
+  );
+  const selectedAgent = agents.find((a) => a.id === agentId);
+  const ready =
+    selectedAgent?.enabled &&
+    ["ready", "online"].includes(selectedAgent.connection_status);
   const benchmarkBusy = benchmarks.some((b) => b.status === "running");
   const visible = useMemo(
     () => (replay ? events.slice(0, cursor + 1) : events),
     [events, replay, cursor],
   );
-  const snapshots = visible.filter(
-    (e) =>
-      e.event_type === "environment.metric" ||
-      e.event_type === "environment.state_changed",
-  );
+  const snapshots = observations(visible);
   const world =
-    !replay &&
-    incident?.id === latest?.id &&
-    incident &&
-    terminal(incident.status)
-      ? (environment ?? incident.after)
-      : ((snapshots.at(-1)?.payload as World | undefined) ??
+    !replay && previewScenario
+      ? environment
+      : (snapshots.at(-1) ??
         (replay ? null : (incident?.after ?? incident?.latest ?? environment)));
-  const evaluations = incidents.flatMap((i) =>
-    i.evaluation ? [i.evaluation] : [],
+  const baseline = snapshots[0];
+  const injection = visible.find(
+    (event) => event.event_type === "fault.injected",
   );
-  const successful = evaluations.filter((e) => e.incident_resolved);
-  const mttr = successful.flatMap((e) =>
-    e.time_to_recovery_seconds == null ? [] : [e.time_to_recovery_seconds],
-  );
-  const percent = (count: number) =>
-    evaluations.length
-      ? `${Math.round((count / evaluations.length) * 100)}%`
-      : "—";
-  const before = visible.find((e) => e.event_type === "alert.generated")
-    ?.payload.metrics as World["metrics"] | undefined;
-
+  const injectedTarget =
+    typeof injection?.payload.target === "string"
+      ? injection.payload.target
+      : injection
+        ? incidentScenario?.target
+        : undefined;
+  const fault: FaultMarker | undefined =
+    !replay && (!incident || previewScenario) && scenario
+      ? { target: scenario.target, label: scenario.name, phase: "preview" }
+      : injectedTarget
+        ? {
+            target: injectedTarget,
+            label: incidentScenario?.name ?? "已记录的故障注入",
+            phase: visible.some(
+              (event) => event.event_type === "incident.resolved",
+            )
+              ? "recovered"
+              : "injected",
+          }
+        : undefined;
   async function perform(fn: () => Promise<unknown>) {
     setBusy(true);
     setError("");
@@ -177,17 +174,21 @@ export default function App() {
       setBusy(false);
     }
   }
-  function navigate(id: string) {
-    setSection(id);
-    document
-      .getElementById(id)
-      ?.scrollIntoView({ behavior: "smooth", block: "start" });
+  function seek(value: number) {
+    setPreviewScenario(false);
+    setReplay(true);
+    setPlaying(false);
+    setCursor(value);
   }
 
   return (
     <div className="shell">
       <aside className="sidebar">
-        <a href="#overview" className="brand">
+        <a
+          href="#workbench"
+          className="brand"
+          onClick={() => setSection("workbench")}
+        >
           <span className="brand-icon">
             <Workflow size={23} />
           </span>
@@ -197,53 +198,60 @@ export default function App() {
           </span>
         </a>
         <div className="workspace">
-          <span className="workspace-dot" /> Local workspace{" "}
-          <span className="version">v0.1</span>
+          <span className="dot green" />
+          Local workspace<span className="version">v0.3</span>
         </div>
-        <div className="nav-label">实验控制台</div>
-        <nav>
-          {[
-            ["overview", Activity, "总览"],
-            ["environment", Layers3, "环境拓扑"],
-            ["incident", Terminal, "事件与 Agent"],
-            ["replay", RotateCcw, "历史回放"],
-          ].map(([id, Icon, label]) => {
-            const Component = Icon as typeof Activity;
-            return (
-              <button
-                key={String(id)}
-                className={section === id ? "nav-item selected" : "nav-item"}
-                onClick={() => navigate(String(id))}
-              >
-                <Component size={18} />
-                {String(label)}
-                {id === "incident" && (
-                  <span className="nav-count">{incidents.length}</span>
-                )}
-              </button>
-            );
-          })}
+        <nav aria-label="主导航">
+          <button
+            className={`nav-item ${section === "workbench" ? "selected" : ""}`}
+            onClick={() => setSection("workbench")}
+          >
+            <Activity size={18} />
+            <span>故障实验台</span>
+          </button>
+          <button
+            className={`nav-item ${section === "agents" ? "selected" : ""}`}
+            onClick={() => setSection("agents")}
+          >
+            <Bot size={18} />
+            <span>Agent 接入中心</span>
+            <span className="nav-count">{agents.length}</span>
+          </button>
+          <button
+            className={`nav-item ${section === "leaderboard" ? "selected" : ""}`}
+            onClick={() => setSection("leaderboard")}
+          >
+            <BarChart3 size={18} />
+            <span>Agent 排行榜</span>
+          </button>
         </nav>
         <div className="sidebar-note">
-          <FlaskConical size={20} />
-          <strong>让故障成为证据。</strong>
+          <Radio size={20} />
+          <strong>观察每一次恢复</strong>
           <p>
-            可控注入，独立诊断，
+            环境的变化与 Agent 的行动，
             <br />
-            让每一步恢复都可验证。
+            在同一条时间线上相遇。
           </p>
-          <span>SIMULATION ENVIRONMENT</span>
+          <span>OBSERVE → ACT → VERIFY</span>
         </div>
         <div className="sidebar-footer">
-          <span className="dot green" /> MCP · Streamable HTTP
-          <small>API / Redis / Worker · 模拟服务</small>
+          <ShieldCheck size={14} />
+          MCP · 安全动作策略<small>模拟环境 / 持久化事件回放</small>
         </div>
       </aside>
       <div className="main">
         <header className="topbar">
           <div>
-            Workspace <ChevronRight size={14} />{" "}
-            <strong>Incident operations</strong>
+            Workspace
+            <ChevronRight size={13} />
+            <strong>
+              {section === "agents"
+                ? "Agent registry"
+                : section === "leaderboard"
+                  ? "Agent leaderboard"
+                  : "Incident workbench"}
+            </strong>
           </div>
           <span className="connection">
             <span
@@ -256,22 +264,7 @@ export default function App() {
                 : "等待实验"}
           </span>
         </header>
-        <main id="overview">
-          <div className="page-heading">
-            <div>
-              <div className="eyebrow">OBSERVE. DIAGNOSE. RECOVER.</div>
-              <h1>
-                故障有迹，恢复有据<span>。</span>
-              </h1>
-              <p>
-                从故障注入到自主修复，观察 Agent 如何完成一次真实的诊断闭环。
-              </p>
-            </div>
-            <div className="lab-badge">
-              <span className="dot green" /> LOCAL LAB{" "}
-              <small>可重复 · 可审计 · 可回放</small>
-            </div>
-          </div>
+        <main id="workbench">
           {error && (
             <div role="alert" className="error-banner">
               {error}
@@ -280,199 +273,199 @@ export default function App() {
               </button>
             </div>
           )}
-          <section className="stats">
-            <Metric
-              label="累计实验"
-              value={String(incidents.length).padStart(2, "0")}
-              detail={`${evaluations.length} 次已评估`}
-            />
-            <Metric
-              label="恢复成功率"
-              value={percent(successful.length)}
-              detail="独立评估器验证"
-              accent
-            />
-            <Metric
-              label="根因诊断准确率"
-              value={percent(
-                evaluations.filter(
-                  (e) => e.root_cause_correct && e.affected_service_correct,
-                ).length,
+          {section === "agents" ? (
+            <AgentRegistry agents={agents} onRefresh={refresh} />
+          ) : section === "leaderboard" ? (
+            <Leaderboard scenarios={scenarios} />
+          ) : (
+            <>
+              <div className="compact-heading">
+                <div>
+                  <span className="eyebrow">ENVIRONMENT ↔ AGENT</span>
+                  <h1>故障实验台</h1>
+                  <p>注入故障，观察告警如何驱动 Agent 完成诊断与恢复。</p>
+                </div>
+                <label className="history-select">
+                  <History size={15} />
+                  <select
+                    aria-label="选择历史事件"
+                    value={selected}
+                    onChange={(e) => {
+                      setSelected(e.target.value);
+                      setPreviewScenario(false);
+                    }}
+                  >
+                    <option value="" disabled>
+                      暂无历史实验
+                    </option>
+                    {incidents.map((i) => (
+                      <option value={i.id} key={i.id}>
+                        {i.id.slice(0, 8)} · {i.status} · seed {i.seed}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              </div>
+              <section className="experiment panel" aria-label="故障实验配置">
+                <div className="experiment-copy">
+                  <span className="experiment-icon">
+                    <Zap size={19} />
+                  </span>
+                  <div>
+                    <h3>{world?.name ?? "微服务模拟环境"}</h3>
+                    <p>
+                      {scenario?.description ??
+                        "选择故障场景，观察服务依赖与告警变化"}
+                    </p>
+                  </div>
+                </div>
+                <div className="experiment-controls">
+                  <label>
+                    故障场景
+                    <select
+                      aria-label="故障场景"
+                      value={scenarioId}
+                      disabled={active}
+                      onChange={(e) => {
+                        setScenarioId(e.target.value);
+                        setPreviewScenario(true);
+                      }}
+                    >
+                      {scenarios.map((item) => (
+                        <option value={item.id} key={item.id}>
+                          {item.name}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label>
+                    响应 Agent
+                    <select
+                      aria-label="响应 Agent"
+                      value={agentId}
+                      onChange={(e) => setAgentId(e.target.value)}
+                    >
+                      {agents.map((a) => (
+                        <option
+                          value={a.id}
+                          key={a.id}
+                          disabled={
+                            !a.enabled ||
+                            ["unavailable", "offline", "disabled"].includes(
+                              a.connection_status,
+                            )
+                          }
+                        >
+                          {a.name} · {agentStatus[a.connection_status]}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label>
+                    随机种子
+                    <input
+                      aria-label="随机种子"
+                      type="number"
+                      min={0}
+                      max={4294967295}
+                      value={seed}
+                      onChange={(e) => setSeed(Number(e.target.value))}
+                    />
+                  </label>
+                  <button
+                    className="primary"
+                    disabled={
+                      busy ||
+                      active ||
+                      benchmarkBusy ||
+                      !ready ||
+                      !scenario ||
+                      !Number.isInteger(seed) ||
+                      seed < 0 ||
+                      seed > 4294967295
+                    }
+                    onClick={() =>
+                      void perform(async () => {
+                        const item = await api<Incident>("/incidents", {
+                          method: "POST",
+                          body: JSON.stringify({
+                            scenario_id: scenarioId,
+                            seed,
+                            auto_agent: true,
+                            agent_id: agentId,
+                          }),
+                        });
+                        setSelected(item.id);
+                        setPreviewScenario(false);
+                      })
+                    }
+                  >
+                    <Zap size={15} />
+                    {active ? "实验进行中" : "注入故障"}
+                  </button>
+                </div>
+              </section>
+              {!ready && !active && (
+                <p className="inline-notice">
+                  请在 Agent 接入中心连接或启用响应 Agent，再注入故障。
+                </p>
               )}
-              detail="根因与责任服务同时匹配"
-            />
-            <Metric
-              label="平均恢复时间"
-              value={
-                mttr.length
-                  ? fmt(mttr.reduce((a, b) => a + b, 0) / mttr.length, "s")
-                  : "—"
-              }
-              detail="从 Agent 启动到确认恢复"
-            />
-            <Metric
-              label="安全通过率"
-              value={percent(
-                evaluations.filter(
-                  (e) => !e.unsafe_action_count && !e.forbidden_action_count,
-                ).length,
-              )}
-              detail={
-                evaluations.length
-                  ? `平均 ${(evaluations.reduce((s, e) => s + e.action_count, 0) / evaluations.length).toFixed(1)} 次动作 / ${(evaluations.reduce((s, e) => s + e.tool_call_count, 0) / evaluations.length).toFixed(0)} 次工具调用`
-                  : "所有变更经过策略审核"
-              }
-            />
-          </section>
-          <section className="experiment panel">
-            <div className="experiment-icon">
-              <Zap size={22} />
-            </div>
-            <div className="experiment-copy">
-              <h3>启动一次故障实验</h3>
-              <p>
-                Worker 连接泄漏 <ArrowRight size={12} /> Redis 压力上升{" "}
-                <ArrowRight size={12} /> API 退化
-              </p>
-            </div>
-            <div className="experiment-controls">
-              <label>
-                Agent
-                <select
-                  aria-label="Agent 类型"
-                  value={mode}
-                  onChange={(e) => setMode(e.target.value)}
-                >
-                  <option value="reference">Reference · 无需密钥</option>
-                  <option value="llm">LLM · 需配置密钥</option>
-                </select>
-              </label>
-              <label>
-                SEED
-                <input
-                  aria-label="随机种子"
-                  type="number"
-                  min="0"
-                  max="4294967295"
-                  value={seed}
-                  onChange={(e) => setSeed(Number(e.target.value))}
-                />
-              </label>
-              <label className="auto-label">
-                <input
-                  type="checkbox"
-                  checked={auto}
-                  onChange={(e) => setAuto(e.target.checked)}
-                />
-                告警后自动响应
-              </label>
-              <button
-                className="primary"
-                disabled={busy || !!active || benchmarkBusy}
-                onClick={() =>
-                  void perform(async () => {
-                    const item = await api<Incident>("/incidents", {
-                      method: "POST",
-                      body: JSON.stringify({
-                        scenario_id: "redis-connection-leak",
-                        seed,
-                        auto_agent: auto,
-                        agent_mode: mode,
+              <div className="workbench-grid">
+                <div data-testid="workbench-environment">
+                  <Environment
+                    world={world}
+                    fault={fault}
+                    replay={replay}
+                    before={baseline?.metrics}
+                  />
+                </div>
+                <IncidentWorkspace
+                  key={selected}
+                  incident={incident}
+                  busy={busy}
+                  visible={visible}
+                  replay={replay}
+                  onStart={() =>
+                    void perform(() =>
+                      api(`/incidents/${selected}/agent`, {
+                        method: "POST",
+                        body: JSON.stringify({ agent_id: agentId }),
                       }),
-                    });
-                    setSelected(item.id);
-                  })
-                }
-              >
-                <Zap size={16} />
-                {active ? "实验进行中" : "注入故障"}
-              </button>
-            </div>
-          </section>
-          <Environment world={world} replay={replay} before={before} />
-          <IncidentWorkspace
-            key={selected}
-            incidents={incidents}
-            selected={selected}
-            onSelect={setSelected}
-            busy={busy}
-            visible={visible}
-            replay={replay}
-            onStart={() =>
-              void perform(() =>
-                api(`/incidents/${selected}/agent`, {
-                  method: "POST",
-                  body: JSON.stringify({ mode }),
-                }),
-              )
-            }
-            onCancel={() =>
-              void perform(() =>
-                api(`/incidents/${selected}/agent`, { method: "DELETE" }),
-              )
-            }
-          />
-          <MetricsTimeline
-            events={events}
-            visible={visible}
-            replay={replay}
-            cursor={cursor}
-            playing={playing}
-            onSeek={(value) => {
-              setReplay(true);
-              setPlaying(false);
-              setCursor(value);
-            }}
-            onToggle={() => {
-              setReplay(true);
-              if (cursor >= events.length - 1) setCursor(0);
-              setPlaying(!playing);
-            }}
-            onLive={() => {
-              setReplay(false);
-              setPlaying(false);
-            }}
-          />
-          <section className="benchmark">
-            <div>
-              <h3>
-                <FlaskConical size={18} />
-                可重复的能力验证
-              </h3>
-              <p>
-                {benchmarks[0]?.aggregate
-                  ? `最近基准：${benchmarks[0].results.length} 次试验 · 恢复率 ${Math.round(benchmarks[0].aggregate.resolution_rate * 100)}% · 平均 ${benchmarks[0].aggregate.average_tool_calls.toFixed(1)} 次工具调用`
-                  : benchmarks[0]
-                    ? `基准 ${benchmarks[0].status} · 已完成 ${benchmarks[0].results.length} 次试验`
-                    : "使用选定 Agent 和种子运行 3 次，比较恢复率、诊断、安全性与效率。"}
-              </p>
-            </div>
-            <button
-              disabled={busy || !!active || benchmarkBusy}
-              onClick={() =>
-                void perform(() =>
-                  api("/benchmarks", {
-                    method: "POST",
-                    body: JSON.stringify({
-                      seeds: [seed],
-                      trials: 3,
-                      agent_mode: mode,
-                    }),
-                  }),
-                )
-              }
-            >
-              <Play size={14} />
-              {benchmarkBusy ? "基准运行中" : "运行基准 · 3 trials"}
-            </button>
-          </section>
+                    )
+                  }
+                  onCancel={() =>
+                    void perform(() =>
+                      api(`/incidents/${selected}/agent`, { method: "DELETE" }),
+                    )
+                  }
+                />
+              </div>
+              <MetricsTimeline
+                key={selected}
+                defaultMetric={incidentScenario?.metric ?? scenario?.metric}
+                events={events}
+                visible={visible}
+                replay={replay}
+                cursor={cursor}
+                playing={playing}
+                onSeek={seek}
+                onToggle={() => {
+                  setReplay(true);
+                  if (cursor >= events.length - 1) setCursor(0);
+                  setPlaying(!playing);
+                }}
+                onLive={() => {
+                  setReplay(false);
+                  setPlaying(false);
+                }}
+              />
+            </>
+          )}
           <footer>
-            INCIDENT AGENT LAB{" "}
+            <span>INCIDENT LAB / SIMULATION</span>
             <span>
-              Simulation creates the problem. Evidence earns the recovery.
-            </span>
-            <span>
-              <ShieldCheck size={12} /> Ground truth isolated
+              <ShieldCheck size={12} />
+              证据驱动诊断 · 安全策略执行 · 独立验证恢复
             </span>
           </footer>
         </main>

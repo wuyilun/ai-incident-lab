@@ -9,10 +9,17 @@ from uuid import uuid4
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
+from apps.control_api.leaderboard import leaderboard
 from apps.control_api.runtime import Runtime
 from apps.control_api.store import Store
 from lab_mcp.server import create_mcp
-from packages.contracts import BenchmarkRequest, InjectRequest, StartRequest
+from packages.contracts import (
+    AgentCreate,
+    AgentUpdate,
+    BenchmarkRequest,
+    InjectRequest,
+    StartRequest,
+)
 from packages.logging import configure_logging
 
 configure_logging()
@@ -41,7 +48,7 @@ def create_app(
                         await task
             store.close()
 
-    app = FastAPI(title="Incident Agent Lab", version="0.1.0", lifespan=lifespan)
+    app = FastAPI(title="Incident Agent Lab", version="0.3.0", lifespan=lifespan)
     app.state.runtime = runtime
 
     @app.middleware("http")
@@ -75,8 +82,66 @@ def create_app(
     @app.get("/api/scenarios")
     async def scenarios():
         return [
-            {"id": s.id, "name": s.name, "severity": s.severity} for s in runtime.scenarios.values()
+            {
+                "id": s.id,
+                "name": s.name,
+                "severity": s.severity,
+                "target": s.target,
+                "fault_type": s.fault.type,
+                "description": s.description,
+                "metric": s.metric,
+            }
+            for s in runtime.scenarios.values()
         ]
+
+    @app.get("/api/leaderboard")
+    async def rankings(scenario_id: str | None = None):
+        return leaderboard(store, set(runtime.scenarios), scenario_id)
+
+    @app.get("/api/agents")
+    async def agents():
+        await runtime.registry.refresh_health()
+        return runtime.registry.list()
+
+    @app.post("/api/agents", status_code=201)
+    async def register_agent(body: AgentCreate):
+        return runtime.registry.create(body)
+
+    @app.patch("/api/agents/{agent_id}")
+    async def update_agent(agent_id: str, body: AgentUpdate):
+        return runtime.registry.update(agent_id, body)
+
+    @app.post("/api/agents/{agent_id}/test")
+    async def test_agent(agent_id: str):
+        return await runtime.registry.test(agent_id)
+
+    @app.post("/api/agents/{agent_id}/rotate-token")
+    async def rotate_agent_token(agent_id: str):
+        return runtime.registry.rotate(agent_id)
+
+    def authenticate_agent(agent_id: str, request: Request) -> None:
+        authorization = request.headers.get("authorization", "")
+        token = authorization.removeprefix("Bearer ") if authorization.startswith("Bearer ") else ""
+        try:
+            runtime.registry.authenticate(agent_id, token)
+        except PermissionError as exc:
+            raise HTTPException(401, str(exc)) from exc
+
+    @app.get("/api/agent-gateway/{agent_id}/next")
+    async def next_assignment(agent_id: str, request: Request):
+        authenticate_agent(agent_id, request)
+        return runtime.next_assignment(agent_id)
+
+    @app.post("/api/agent-gateway/{agent_id}/heartbeat")
+    async def heartbeat(agent_id: str, request: Request):
+        authenticate_agent(agent_id, request)
+        runtime.registry.touch(agent_id)
+        return {"status": "online"}
+
+    @app.post("/api/agent-gateway/{agent_id}/assignments/{run_id}/ack")
+    async def acknowledge_assignment(agent_id: str, run_id: str, request: Request):
+        authenticate_agent(agent_id, request)
+        return runtime.acknowledge(agent_id, run_id)
 
     @app.post("/api/incidents", status_code=201)
     async def inject(body: InjectRequest):
@@ -95,7 +160,7 @@ def create_app(
 
     @app.post("/api/incidents/{incident_id}/agent")
     async def start(incident_id: str, body: StartRequest):
-        return runtime.start_agent(incident_id, body.mode)
+        return runtime.start_agent(incident_id, body.mode, body.agent_id)
 
     @app.delete("/api/incidents/{incident_id}/agent")
     async def cancel(incident_id: str):

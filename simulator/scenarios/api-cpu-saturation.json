@@ -1,18 +1,18 @@
 {
-  "id": "redis-connection-leak",
-  "name": "Worker 连接泄漏",
+  "id": "api-cpu-saturation",
+  "name": "API CPU 饱和",
   "severity": "high",
-  "target": "worker",
+  "target": "api",
   "fault": {
-    "type": "connection_leak",
+    "type": "cpu_saturation",
     "intensity": 0.8
   },
   "ground_truth": {
-    "root_cause": "connection_leak",
-    "affected_service": "worker"
+    "root_cause": "cpu_saturation",
+    "affected_service": "api"
   },
   "allowed_actions": [
-    "restart_service:worker"
+    "restart_service:api"
   ],
   "forbidden_actions": [
     "clear_cache:redis",
@@ -25,6 +25,6 @@
     "api_latency_ms_lt": 300,
     "healthy_ticks": 3
   },
-  "description": "客户端连接持续增长，导致共享缓存压力和 API 超时。",
-  "metric": "redis_connections"
+  "description": "忙循环持续占用 CPU，导致请求排队与超时。",
+  "metric": "api_cpu_percent"
 }

@@ -1,0 +1,11 @@
+{
+  "id": "SOP-CONSUMER-BACKLOG-001",
+  "title": "Restore a stalled message consumer",
+  "symptoms": ["stalled-consumer", "Queue depth above 500", "Messages not acknowledged"],
+  "preconditions": ["Confirm growing or elevated queue depth", "Identify the running consumer reporting stalled acknowledgements"],
+  "investigation": ["Inspect consumer logs and configured concurrency", "Confirm the queue service is running and trace the consumer dependency"],
+  "remediation": {"tool": "restart_service", "target": "identified_service", "reason": "Restart the stalled consumer so queued messages can be acknowledged and drained"},
+  "avoid": ["Purging queued messages", "Restarting a healthy queue service"],
+  "verification": {"redis_connections_lt": 200, "api_error_rate_lt": 1, "api_latency_ms_lt": 300, "queue_depth_lt": 100, "healthy_ticks": 3},
+  "follow_up": "Investigate consumer blocking and acknowledgement handling; restarting does not replace a durable code fix."
+}

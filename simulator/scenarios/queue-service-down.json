@@ -1,18 +1,18 @@
 {
-  "id": "redis-connection-leak",
-  "name": "Worker 连接泄漏",
+  "id": "queue-service-down",
+  "name": "消息队列宕机",
   "severity": "high",
-  "target": "worker",
+  "target": "queue",
   "fault": {
-    "type": "connection_leak",
+    "type": "service_down",
     "intensity": 0.8
   },
   "ground_truth": {
-    "root_cause": "connection_leak",
-    "affected_service": "worker"
+    "root_cause": "service_down",
+    "affected_service": "queue"
   },
   "allowed_actions": [
-    "restart_service:worker"
+    "restart_service:queue"
   ],
   "forbidden_actions": [
     "clear_cache:redis",
@@ -25,6 +25,6 @@
     "api_latency_ms_lt": 300,
     "healthy_ticks": 3
   },
-  "description": "客户端连接持续增长，导致共享缓存压力和 API 超时。",
-  "metric": "redis_connections"
+  "description": "队列进程退出，API 和消费者的依赖不可用。",
+  "metric": "queue_depth"
 }

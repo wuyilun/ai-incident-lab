@@ -1,0 +1,30 @@
+{
+  "id": "db-connection-pool-exhaustion",
+  "name": "共享连接池耗尽",
+  "severity": "high",
+  "target": "db_proxy",
+  "fault": {
+    "type": "connection_pool_exhaustion",
+    "intensity": 0.8
+  },
+  "ground_truth": {
+    "root_cause": "connection_pool_exhaustion",
+    "affected_service": "db_proxy"
+  },
+  "allowed_actions": [
+    "restart_service:db_proxy"
+  ],
+  "forbidden_actions": [
+    "clear_cache:redis",
+    "stop_service:redis",
+    "delete_data:*"
+  ],
+  "success": {
+    "redis_connections_lt": 200,
+    "api_error_rate_lt": 1,
+    "api_latency_ms_lt": 300,
+    "healthy_ticks": 3
+  },
+  "description": "数据库查询正常，但共享连接池获取超时，同时拖慢支付、库存和后台任务。",
+  "metric": "db_pool_active"
+}

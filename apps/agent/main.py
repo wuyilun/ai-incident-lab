@@ -26,7 +26,12 @@ class RunRequest(BaseModel):
 
 @app.get("/health")
 async def health():
-    return {"status": "ok", "modes": ["reference", "llm"]}
+    return {
+        "status": "ok",
+        "modes": ["reference", "llm"],
+        "configured": {"reference": True, "llm": bool(os.getenv("LLM_API_KEY"))},
+        "capabilities": ["mcp", "diagnostic_skills", "sop", "verification"],
+    }
 
 
 async def execute(body: RunRequest):

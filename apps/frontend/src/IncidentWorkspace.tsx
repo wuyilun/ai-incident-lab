@@ -1,31 +1,24 @@
-import { useState } from "react";
-import type { ReactNode } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
-  Check,
+  Bot,
   CheckCircle2,
   ChevronRight,
   CircleDot,
-  GitBranch,
-  Layers3,
+  Download,
+  FileCheck2,
   Play,
   ShieldCheck,
   Square,
   Terminal,
 } from "lucide-react";
-import { terminal } from "./types";
-import type { Evaluation, Incident, LabEvent } from "./types";
-const phases = [
-  "detected",
-  "investigating",
-  "diagnosing",
-  "planning",
-  "acting",
-  "verifying",
-  "resolved",
-];
+import { observations, terminal } from "./types";
+import type { Evaluation, Incident, LabEvent, Metrics } from "./types";
+import { fmt, metricLabel, metricUnit } from "./format";
+
 const names: Record<string, string> = {
   degrading: "故障演化中",
   detected: "告警触发",
+  dispatching: "等待 Agent 接收",
   investigating: "采集证据",
   diagnosing: "定位根因",
   planning: "选择 SOP",
@@ -35,10 +28,22 @@ const names: Record<string, string> = {
   failed: "执行失败",
   cancelled: "已取消",
 };
-
-const asText = (value: unknown) =>
-  typeof value === "string" ? value : JSON.stringify(value);
-
+const eventPhases: Record<string, string> = {
+  "fault.injected": "degrading",
+  "alert.generated": "detected",
+  "alert.dispatched": "dispatching",
+  "agent.alert_received": "investigating",
+  "agent.started": "investigating",
+  "agent.hypothesis": "diagnosing",
+  "agent.plan": "planning",
+  "action.completed": "acting",
+  "agent.verification": "verifying",
+  "incident.resolved": "resolved",
+  "incident.failed": "failed",
+  "incident.cancelled": "cancelled",
+};
+const text = (value: unknown) =>
+  typeof value === "string" ? value : (JSON.stringify(value) ?? "未产生");
 function describe(event: LabEvent): string {
   const p = event.payload;
   if (event.event_type === "agent.tool_call")
@@ -53,7 +58,10 @@ function describe(event: LabEvent): string {
     return `${p.decision} · ${p.tool}(${p.target})`;
   if (event.event_type === "agent.plan")
     return `${p.sop} → ${p.action}(${p.target})`;
-  return asText(
+  if (event.event_type === "agent.alert_received")
+    return "Agent 已接收告警，开始诊断";
+  if (event.event_type === "alert.dispatched") return "告警已投递到响应 Agent";
+  return text(
     p.summary ??
       p.decision ??
       p.name ??
@@ -65,9 +73,7 @@ function describe(event: LabEvent): string {
 }
 
 type Props = {
-  incidents: Incident[];
-  selected: string;
-  onSelect: (id: string) => void;
+  incident?: Incident;
   busy: boolean;
   onStart: () => void;
   onCancel: () => void;
@@ -75,204 +81,310 @@ type Props = {
   replay: boolean;
 };
 export default function IncidentWorkspace({
-  incidents,
-  selected,
-  onSelect,
+  incident,
   busy,
   onStart,
   onCancel,
   visible,
   replay,
-}: Props): ReactNode {
+}: Props) {
   const [expanded, setExpanded] = useState<number | null>(null);
-  const incident = incidents.find((i) => i.id === selected);
+  const [tab, setTab] = useState<"trace" | "report">("trace");
+  const traceEnd = useRef<HTMLDivElement>(null);
   const last = (type: string) =>
     visible.findLast((e) => e.event_type === type)?.payload;
   const hypothesis = last("agent.hypothesis");
   const plan = last("agent.plan");
   const verification = last("agent.verification");
   const evaluation = last("evaluator.result") as Evaluation | undefined;
-  const statusEvent = visible.findLast(
-    (e) =>
-      e.event_type.startsWith("incident.") || e.event_type === "agent.started",
-  );
+  const alert = last("alert.generated");
+  const received = last("agent.alert_received") ?? last("agent.started");
+  const observedStatus = visible
+    .map((e) => {
+      if (
+        e.event_type.startsWith("incident.") ||
+        e.event_type.startsWith("agent.")
+      ) {
+        const phase = e.payload.phase ?? e.payload.status;
+        if (typeof phase === "string" && phase in names) return phase;
+      }
+      return eventPhases[e.event_type];
+    })
+    .findLast(Boolean);
   const status = replay
-    ? String(statusEvent?.payload.status ?? "degrading")
+    ? (observedStatus ?? "degrading")
     : (incident?.status ?? "idle");
   const trace = visible.filter(
     (e) =>
-      e.event_type !== "environment.metric" &&
-      e.event_type !== "incident.updated",
+      ![
+        "environment.metric",
+        "environment.state_changed",
+        "incident.updated",
+      ].includes(e.event_type),
   );
-
+  const actions = visible.filter((e) => e.event_type === "action.completed");
+  const attempts = visible.filter((e) => e.event_type === "action.attempted");
+  const snapshots = observations(visible);
+  const before = snapshots[0];
+  const after = snapshots.at(-1);
+  const metricKeys = Object.keys(after?.metrics ?? {});
+  const peak = (key: keyof Metrics) => {
+    const values = snapshots
+      .map((snapshot) => snapshot.metrics[key])
+      .filter((value) => Number.isFinite(value));
+    return values.length ? Math.max(...values) : undefined;
+  };
+  const identity =
+    incident?.agent_name ?? `${incident?.agent_mode ?? "Reference"} Agent`;
+  const evidence = Array.isArray(hypothesis?.evidence)
+    ? hypothesis.evidence
+    : [];
+  const summary = visible.findLast((e) =>
+    ["incident.resolved", "incident.failed", "incident.cancelled"].includes(
+      e.event_type,
+    ),
+  )?.payload.summary;
+  useEffect(() => {
+    const list = traceEnd.current?.parentElement;
+    if (!replay && tab === "trace" && list) list.scrollTop = list.scrollHeight;
+  }, [visible.length, replay, tab]);
+  function download() {
+    const report = {
+      incident_id: incident?.id,
+      agent: {
+        id: incident?.agent_id,
+        name: identity,
+        kind: incident?.agent_mode,
+      },
+      through_sequence: visible.at(-1)?.sequence,
+      status,
+      diagnosis: hypothesis ?? null,
+      plan: plan ?? null,
+      actions: actions.map((e) => e.payload),
+      safety_decisions: attempts.map((e) => e.payload),
+      verification: verification ?? null,
+      evaluation: evaluation ?? null,
+      summary: summary ?? null,
+      metrics: {
+        baseline: before?.metrics ?? null,
+        peak: Object.fromEntries(metricKeys.map((key) => [key, peak(key)])),
+        current: after?.metrics ?? null,
+      },
+    };
+    const url = URL.createObjectURL(
+      new Blob([JSON.stringify(report, null, 2)], { type: "application/json" }),
+    );
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = `incident-${incident?.id ?? "report"}-${visible.at(-1)?.sequence ?? 0}.json`;
+    anchor.click();
+    URL.revokeObjectURL(url);
+  }
   return (
-    <section className="panel incident-panel" id="incident">
+    <section
+      className="panel incident-panel"
+      id="incident"
+      data-testid="workbench-agent"
+    >
       <div className="panel-heading">
+        <h2>
+          <Bot size={18} />
+          Agent 执行现场
+        </h2>
+        <span
+          className={`status ${["failed", "degrading", "dispatching"].includes(status) ? "warning" : ""}`}
+          data-testid="incident-status"
+        >
+          {names[status] ?? "等待注入"}
+        </span>
+      </div>
+      <div className="agent-identity">
+        <span className="agent-avatar">
+          <Bot size={21} />
+        </span>
         <div>
-          <span className="section-index">03</span>
-          <h2>Incident workspace</h2>
-          <span
-            className={`status ${["failed", "degrading"].includes(status) ? "warning" : ""}`}
-            data-testid="incident-status"
-          >
-            {names[status] ?? "等待注入"}
-          </span>
+          <strong>{incident ? identity : "等待响应 Agent"}</strong>
+          <small>
+            {incident
+              ? `INC / ${incident.id.slice(0, 8)} · ${incident.agent_mode.toUpperCase()}`
+              : "注册、连接，然后开始一次实验"}
+          </small>
         </div>
         <div className="inline-controls">
-          <select
-            aria-label="选择历史事件"
-            value={selected}
-            onChange={(e) => onSelect(e.target.value)}
-          >
-            <option value="" disabled>
-              选择事件
-            </option>
-            {incidents.map((i) => (
-              <option key={i.id} value={i.id}>
-                {i.id.slice(0, 8)} · {names[i.status]} · seed {i.seed}
-              </option>
-            ))}
-          </select>
-          {incident?.status === "detected" && (
+          {!replay && incident?.status === "detected" && (
             <button disabled={busy} onClick={onStart}>
-              <Play size={14} />
+              <Play size={13} />
               启动 Agent
             </button>
           )}
-          {incident && !terminal(incident.status) && (
+          {!replay && incident && !terminal(incident.status) && (
             <button disabled={busy} onClick={onCancel}>
-              <Square size={13} />
+              <Square size={12} />
               停止
             </button>
           )}
         </div>
       </div>
-      <div className="incident-summary">
-        <span className="incident-id">
-          {incident ? `INC / ${incident.id.slice(0, 8)}` : "NO ACTIVE INCIDENT"}
-        </span>
-        <strong>
-          {incident
-            ? replay && status === "degrading"
-              ? "故障已注入，等待告警阈值"
-              : (incident.alert?.name ?? "故障已注入，等待告警阈值")
-            : "准备好观察下一次恢复"}
-        </strong>
-        <span className="tag">
-          {incident?.agent_mode === "llm"
-            ? "LLM AGENT"
-            : incident?.agent_mode === "external"
-              ? "EXTERNAL AGENT"
-              : "REFERENCE AGENT"}
-        </span>
-      </div>
-      <div className="lifecycle">
-        {phases.map((phase, i) => (
-          <div
-            key={phase}
-            className={`phase ${phases.indexOf(status) > i ? "done" : ""} ${status === phase ? "current" : ""}`}
-          >
-            <span>
-              {phases.indexOf(status) > i ? (
-                <Check size={13} />
-              ) : (
-                String(i + 1).padStart(2, "0")
-              )}
-            </span>
-            {names[phase]}
-            {i < phases.length - 1 && <ChevronRight size={14} />}
-          </div>
-        ))}
-      </div>
-      <div className="incident-grid">
-        <div className="trace">
-          <div className="subheading">
-            <h3>
-              <Terminal size={15} />
-              Agent 执行轨迹
-            </h3>
-            <span>{trace.length} events · MCP</span>
-          </div>
-          <div className="trace-list" aria-label="Agent 执行轨迹">
-            {trace.length ? (
-              trace.map((event) => (
-                <div
-                  key={event.sequence}
-                  className={`trace-item ${event.event_type.includes("hypothesis") || event.event_type === "action.completed" ? "highlight" : ""}`}
-                >
-                  <button
-                    onClick={() =>
-                      setExpanded(
-                        expanded === event.sequence ? null : event.sequence,
-                      )
-                    }
-                    aria-expanded={expanded === event.sequence}
-                  >
-                    <time>
-                      {new Date(event.timestamp).toLocaleTimeString("zh-CN", {
-                        hour12: false,
-                      })}
-                    </time>
-                    <span className="trace-dot" />
-                    <div>
-                      <small>{event.event_type}</small>
-                      <p>{describe(event)}</p>
-                    </div>
-                    <ChevronRight size={13} />
-                  </button>
-                  {expanded === event.sequence && (
-                    <pre>{JSON.stringify(event.payload, null, 2)}</pre>
-                  )}
-                </div>
-              ))
-            ) : (
-              <div className="empty">
-                <CircleDot size={26} />
-                <strong>证据从这里开始</strong>
-                <p>注入故障后，告警、工具调用、诊断和修复会按发生顺序记录。</p>
-              </div>
-            )}
-          </div>
+      <div className={`alert-receipt ${received ? "received" : ""}`}>
+        <CircleDot size={14} />
+        <div>
+          <strong>
+            {received
+              ? "Agent 已接收告警"
+              : last("alert.dispatched")
+                ? "告警已投递，等待 Agent 确认"
+                : alert
+                  ? "告警已触发"
+                  : "等待故障触发告警"}
+          </strong>
+          <p>
+            {alert
+              ? text(alert.name)
+              : "环境超过告警阈值后，将自动通知所选 Agent。"}
+          </p>
         </div>
-        <div className="diagnosis">
-          <div className="subheading">
-            <h3>
-              <GitBranch size={15} />
-              诊断与决策
-            </h3>
+      </div>
+      <div className="workspace-tabs" role="tablist" aria-label="Agent 视图">
+        <button
+          role="tab"
+          aria-selected={tab === "trace"}
+          aria-controls="agent-trace-panel"
+          id="trace-tab"
+          onClick={() => setTab("trace")}
+        >
+          <Terminal size={14} />
+          执行过程<span>{trace.length}</span>
+        </button>
+        <button
+          role="tab"
+          aria-selected={tab === "report"}
+          aria-controls="agent-report-panel"
+          id="report-tab"
+          onClick={() => setTab("report")}
+        >
+          <FileCheck2 size={14} />
+          诊断报告{evaluation && <span>已评估</span>}
+        </button>
+      </div>
+      {tab === "trace" ? (
+        <div
+          id="agent-trace-panel"
+          role="tabpanel"
+          aria-labelledby="trace-tab"
+          className="trace-list"
+          aria-label="Agent 执行轨迹"
+        >
+          {trace.length ? (
+            trace.map((event) => (
+              <div
+                className={`trace-item ${["agent.hypothesis", "action.completed", "incident.resolved"].includes(event.event_type) ? "highlight" : ""}`}
+                key={event.sequence}
+              >
+                <button
+                  onClick={() =>
+                    setExpanded(
+                      expanded === event.sequence ? null : event.sequence,
+                    )
+                  }
+                  aria-expanded={expanded === event.sequence}
+                >
+                  <time>
+                    {new Date(event.timestamp).toLocaleTimeString("zh-CN", {
+                      hour12: false,
+                    })}
+                  </time>
+                  <span className="trace-dot" />
+                  <div>
+                    <small>{event.event_type}</small>
+                    <p>{describe(event)}</p>
+                  </div>
+                  <ChevronRight size={13} />
+                </button>
+                {expanded === event.sequence && (
+                  <pre>{JSON.stringify(event.payload, null, 2)}</pre>
+                )}
+              </div>
+            ))
+          ) : (
+            <div className="empty">
+              <CircleDot size={28} />
+              <strong>从一条告警开始</strong>
+              <p>接收告警、MCP 调查、诊断与修复将依次出现在这里。</p>
+            </div>
+          )}
+          <div ref={traceEnd} />
+        </div>
+      ) : (
+        <div
+          id="agent-report-panel"
+          role="tabpanel"
+          aria-labelledby="report-tab"
+          className="diagnosis"
+          data-testid="diagnosis-report"
+        >
+          <div className="report-heading">
+            <span>{replay ? "当前回放时刻的报告" : "当前实验诊断报告"}</span>
+            <button disabled={!incident || !visible.length} onClick={download}>
+              <Download size={13} />
+              下载报告
+            </button>
           </div>
-          <label>ROOT CAUSE</label>
+          <label>根因诊断</label>
           <h3 className="root-cause">
             {hypothesis
               ? `${hypothesis.service} / ${hypothesis.root_cause}`
-              : "等待诊断证据"}
+              : "未产生诊断"}
           </h3>
-          <label>EVIDENCE</label>
-          {hypothesis ? (
+          <label>诊断证据</label>
+          {evidence.length ? (
             <ul className="evidence">
-              {(hypothesis.evidence as string[]).map((e, i) => (
+              {evidence.map((e, i) => (
                 <li key={i}>
                   <CheckCircle2 size={14} />
-                  {e}
+                  {text(e)}
                 </li>
               ))}
             </ul>
           ) : (
-            <p className="muted">
-              Agent 将沿依赖关系调查指标、日志与资源归属。
-            </p>
+            <p className="muted">未产生证据</p>
           )}
           <div className="sop-box">
-            <span>
-              <Layers3 size={15} /> SOP / REMEDIATION
-            </span>
-            <strong>{plan ? String(plan.sop) : "等待检索操作规程"}</strong>
+            <label>修复 SOP</label>
+            <strong>{plan ? text(plan.sop) : "未产生修复计划"}</strong>
             {plan && (
               <code>
-                {String(plan.action)}({String(plan.target)})
+                {text(plan.action)}({text(plan.target)})
               </code>
             )}
           </div>
+          <label>实际执行动作</label>
+          {actions.length ? (
+            <ul className="evidence">
+              {actions.map((e) => (
+                <li key={e.sequence}>
+                  <CheckCircle2 size={14} />
+                  {describe(e)}
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <p className="muted">未执行修复动作</p>
+          )}
+          {attempts.some((e) => e.payload.decision !== "ALLOW") && (
+            <p className="denied">
+              安全策略已拦截{" "}
+              {attempts.filter((e) => e.payload.decision !== "ALLOW").length}{" "}
+              次动作尝试，详情见执行过程。
+            </p>
+          )}
+          <label>Agent 恢复验证</label>
+          {verification ? (
+            <pre className="artifact">
+              {JSON.stringify(verification, null, 2)}
+            </pre>
+          ) : (
+            <p className="muted">未产生验证结果</p>
+          )}
           <div
             className={`verification ${evaluation?.incident_resolved ? "passed" : ""}`}
           >
@@ -283,19 +395,73 @@ export default function IncidentWorkspace({
                   ? evaluation.incident_resolved
                     ? "独立评估：恢复通过"
                     : "独立评估：未通过"
-                  : verification
-                    ? "Agent 已验证，等待评估"
-                    : "等待恢复验证"}
+                  : "独立评估：未产生"}
               </strong>
-              <p>
-                {evaluation
-                  ? `根因 ${evaluation.root_cause_correct ? "正确" : "未匹配"} · ${evaluation.tool_call_count} 次工具调用 · ${evaluation.action_count} 次动作`
-                  : "连续健康采样 + 环境实际状态检查"}
-              </p>
+              {evaluation && (
+                <p>
+                  根因 {evaluation.root_cause_correct ? "正确" : "未匹配"} ·{" "}
+                  {evaluation.tool_call_count} 次工具调用 ·{" "}
+                  {evaluation.action_count} 次动作
+                </p>
+              )}
             </div>
           </div>
+          {evaluation && (
+            <dl className="evaluation-grid">
+              <div>
+                <dt>环境恢复</dt>
+                <dd>{evaluation.environment_recovered ? "通过" : "未通过"}</dd>
+              </div>
+              <div>
+                <dt>持续恢复验证</dt>
+                <dd>{evaluation.recovery_verified ? "通过" : "未通过"}</dd>
+              </div>
+              <div>
+                <dt>责任服务</dt>
+                <dd>
+                  {evaluation.affected_service_correct ? "正确" : "未匹配"}
+                </dd>
+              </div>
+              <div>
+                <dt>恢复耗时</dt>
+                <dd>
+                  {fmt(evaluation.time_to_recovery_seconds ?? undefined, "s")}
+                </dd>
+              </div>
+              <div>
+                <dt>策略拒绝</dt>
+                <dd>{evaluation.denied_action_count} 次</dd>
+              </div>
+              <div>
+                <dt>不安全 / 禁止动作</dt>
+                <dd>
+                  {evaluation.unsafe_action_count} /{" "}
+                  {evaluation.forbidden_action_count}
+                </dd>
+              </div>
+            </dl>
+          )}
+          <label>指标变化 · 基线 → 故障峰值 → 当前时刻</label>
+          <div className="report-metrics">
+            {metricKeys.map((key) => (
+              <span key={key}>
+                {metricLabel(key)}
+                <strong>
+                  {fmt(before?.metrics[key])} → {fmt(peak(key))} →{" "}
+                  {fmt(after?.metrics[key])} {metricUnit(key)}
+                </strong>
+              </span>
+            ))}
+            {!metricKeys.length && (
+              <p className="muted">当前时刻未产生指标采样</p>
+            )}
+          </div>
+          <label>最终结论</label>
+          <p className="report-summary">
+            {summary ? text(summary) : "未产生最终结论"}
+          </p>
         </div>
-      </div>
+      )}
     </section>
   );
 }

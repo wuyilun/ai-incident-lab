@@ -1,0 +1,11 @@
+{
+  "id": "SOP-CPU-SATURATION-001",
+  "title": "Contain a service busy loop",
+  "symptoms": ["busy-loop", "CPU utilization above 90 percent"],
+  "preconditions": ["Confirm elevated CPU and busy-loop log records", "Identify the service emitting the busy-loop records"],
+  "investigation": ["Compare current CPU with the service CPU limit", "Inspect service state and downstream error propagation"],
+  "remediation": {"tool": "restart_service", "target": "identified_service", "reason": "Restart the service owning the busy loop to restore request processing"},
+  "avoid": ["Restarting healthy dependencies", "Deleting data"],
+  "verification": {"redis_connections_lt": 200, "api_error_rate_lt": 1, "api_latency_ms_lt": 300, "api_cpu_percent_lt": 80, "healthy_ticks": 3},
+  "follow_up": "Restart is containment. Profile the busy path and fix the loop before the next deployment."
+}

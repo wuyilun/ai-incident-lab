@@ -15,6 +15,7 @@ class ToolClient:
         self.calls = 0
         self.actions = 0
         self.resolved = False
+        self.run_id: str | None = None
 
     async def call(self, name: str, **arguments: Any) -> Any:
         self.calls += 1
@@ -24,6 +25,15 @@ class ToolClient:
             self.actions += 1
             if self.actions > 2:
                 raise RuntimeError("Agent action budget exhausted")
+        if self.run_id and name in {
+            "restart_service",
+            "stop_service",
+            "clear_cache",
+            "report_progress",
+            "resolve_incident",
+            "fail_incident",
+        }:
+            arguments.setdefault("run_id", self.run_id)
         result = await self.session.call_tool(name, arguments)
         if result.isError:
             raise RuntimeError("; ".join(c.text for c in result.content if c.type == "text"))
@@ -33,6 +43,9 @@ class ToolClient:
         else:
             texts = [c.text for c in result.content if c.type == "text"]
             value = json.loads(texts[0]) if len(texts) == 1 else [json.loads(t) for t in texts]
+        if name == "receive_alert":
+            assignment = value.get("assignment")
+            self.run_id = assignment["run_id"] if assignment else None
         if name == "resolve_incident":
             self.resolved = value.get("status") == "resolved"
         return value

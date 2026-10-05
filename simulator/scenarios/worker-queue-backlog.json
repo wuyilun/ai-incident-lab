@@ -1,14 +1,14 @@
 {
-  "id": "redis-connection-leak",
-  "name": "Worker 连接泄漏",
+  "id": "worker-queue-backlog",
+  "name": "Worker 消费阻塞",
   "severity": "high",
   "target": "worker",
   "fault": {
-    "type": "connection_leak",
+    "type": "queue_backlog",
     "intensity": 0.8
   },
   "ground_truth": {
-    "root_cause": "connection_leak",
+    "root_cause": "queue_backlog",
     "affected_service": "worker"
   },
   "allowed_actions": [
@@ -25,6 +25,6 @@
     "api_latency_ms_lt": 300,
     "healthy_ticks": 3
   },
-  "description": "客户端连接持续增长，导致共享缓存压力和 API 超时。",
-  "metric": "redis_connections"
+  "description": "消费者不确认消息，积压持续增长并拖慢业务。",
+  "metric": "queue_depth"
 }

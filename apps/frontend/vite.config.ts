@@ -5,5 +5,10 @@ export default defineConfig({
   build: {
     rollupOptions: { output: { manualChunks: { charts: ["recharts"] } } },
   },
-  server: { proxy: { "/api": "http://127.0.0.1:8000" } },
+  server: {
+    proxy: {
+      "/api": process.env.LAB_CONTROL_URL ?? "http://127.0.0.1:8000",
+      "/mcp": process.env.LAB_CONTROL_URL ?? "http://127.0.0.1:8000",
+    },
+  },
 });

@@ -1,0 +1,11 @@
+{
+  "id": "SOP-DATABASE-POOL-PRESSURE-001",
+  "title": "Recover an exhausted database connection pool",
+  "symptoms": ["pool-acquisition-timeout", "High pool occupancy", "Connection acquisition waits while database queries remain healthy"],
+  "preconditions": ["Identify the running pool owner through its database dependency and configured pool limit", "Confirm at least 90 percent occupancy, acquisition wait above 100 ms and repeated acquisition timeouts from that owner", "Confirm the database is running with query latency below 200 ms and upstream CPU remains normal"],
+  "investigation": ["Compare acquisition wait with query execution latency to distinguish resource starvation from slow queries", "Trace API, payment and worker timeout propagation back to the pool owner", "Reject a diagnosis based only on one timeout record or elevated API latency"],
+  "remediation": {"tool": "restart_service", "target": "identified_pool_owner", "reason": "Reset the exhausted connection pool at its owner while preserving the healthy database and upstream clients"},
+  "avoid": ["Restarting healthy upstream clients", "Restarting the healthy database", "Clearing caches or deleting data"],
+  "verification": {"redis_connections_lt": 200, "api_error_rate_lt": 1, "api_latency_ms_lt": 300, "database_latency_ms_lt": 200, "db_pool_active_lt": 70, "db_pool_wait_ms_lt": 100, "healthy_ticks": 3},
+  "follow_up": "Restart is containment. Investigate pool sizing, connection hold time, acquisition cancellation and admission control before considering the issue permanently fixed."
+}
